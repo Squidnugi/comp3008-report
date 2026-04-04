@@ -4,3 +4,4 @@ __pycache__/
 .tmp_*.py
 Report Data/
 Report Data.zip
+Report_Data/*.csv

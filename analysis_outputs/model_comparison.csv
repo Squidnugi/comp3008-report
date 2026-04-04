@@ -1,0 +1,4 @@
+Model,Target,MAE,RMSE,R²,Suitability
+ARIMA,Annual employment rate (%),0.836 pp,N/A (univariate TS),N/A (univariate TS),Appropriate for temporal trend; limited by small series (n=6).
+Ridge Regression,Gross weekly pay (£),£157.69,£193.74,0.2177,Interpretable linear baseline; assumes linearity which may not hold.
+Random Forest,Gross weekly pay (£),£149.48,£182.65,0.3047,"Captures non-linear patterns; less interpretable, higher compute cost."
