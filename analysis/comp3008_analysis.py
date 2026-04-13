@@ -316,33 +316,96 @@ def run_arima_forecast(df: pd.DataFrame) -> tuple[float | None, pd.Series | None
 
     train_ts = annual_emp[annual_emp.index <= 2022]
     test_ts = annual_emp[annual_emp.index >= 2023]
+    future_horizon = 3
+    last_year = int(annual_emp.index.max())
+    future_years = np.arange(last_year + 1, last_year + 1 + future_horizon)
 
     try:
-        model = auto_arima(
+        backtest_model = auto_arima(
             train_ts,
             seasonal=False,
             stepwise=True,
             suppress_warnings=True,
             error_action="ignore",
         )
-        print(f"\nSelected ARIMA order: {model.order}")
-        forecast = pd.Series(model.predict(n_periods=len(test_ts)), index=test_ts.index)
+        print(f"\nSelected ARIMA order (backtest): {backtest_model.order}")
+        test_forecast = pd.Series(backtest_model.predict(n_periods=len(test_ts)), index=test_ts.index)
+        test_forecast = pd.to_numeric(test_forecast, errors="coerce")
+        if test_forecast.isna().any():
+            fallback_value = float(train_ts.dropna().iloc[-1]) if train_ts.dropna().size > 0 else float(annual_emp.dropna().iloc[-1])
+            test_forecast = test_forecast.fillna(fallback_value)
+
+        # Refit on all observed years, then forecast beyond 2024.
+        full_model = auto_arima(
+            annual_emp,
+            seasonal=False,
+            stepwise=True,
+            suppress_warnings=True,
+            error_action="ignore",
+        )
+        future_pred, future_ci = full_model.predict(n_periods=future_horizon, return_conf_int=True)
+        future_forecast = pd.Series(future_pred, index=future_years)
+        future_lower = pd.Series(future_ci[:, 0], index=future_years)
+        future_upper = pd.Series(future_ci[:, 1], index=future_years)
+        future_forecast = pd.to_numeric(future_forecast, errors="coerce")
+        future_lower = pd.to_numeric(future_lower, errors="coerce")
+        future_upper = pd.to_numeric(future_upper, errors="coerce")
+        if future_forecast.isna().any():
+            fallback_value = float(annual_emp.dropna().iloc[-1])
+            future_forecast = future_forecast.fillna(fallback_value)
+        future_lower = future_lower.fillna(future_forecast)
+        future_upper = future_upper.fillna(future_forecast)
     except Exception as exc:
         print(f"ARIMA fitting failed: {exc}")
-        forecast = pd.Series([train_ts.iloc[-1]] * len(test_ts), index=test_ts.index)
+        test_forecast = pd.Series([train_ts.iloc[-1]] * len(test_ts), index=test_ts.index)
+        future_forecast = pd.Series([annual_emp.iloc[-1]] * future_horizon, index=future_years)
+        future_lower = future_forecast.copy()
+        future_upper = future_forecast.copy()
         print("Using a naive persistence forecast instead.")
 
-    arima_mae = mean_absolute_error(test_ts, forecast)
-    print(f"ARIMA MAE on test set: {arima_mae:.3f} percentage points")
+    eval_df = pd.concat([test_ts.rename("actual"), test_forecast.rename("pred")], axis=1).dropna()
+    if len(eval_df) == 0:
+        arima_mae = float("nan")
+        print("ARIMA MAE on 2023-2024 backtest: unavailable (no valid overlap after cleaning)")
+    else:
+        arima_mae = mean_absolute_error(eval_df["actual"], eval_df["pred"])
+        print(f"ARIMA MAE on 2023-2024 backtest: {arima_mae:.3f} percentage points")
+    print("Future ARIMA forecast:")
+    print(future_forecast.round(2).to_string())
 
     fig, ax = plt.subplots(figsize=(9, 5))
     ax.plot(annual_emp.index, annual_emp.values, marker="o", label="Actual", color="#4878CF")
-    ax.plot(test_ts.index, forecast.values, marker="s", linestyle="--", label="ARIMA Forecast", color="#E06C75")
-    ax.axvspan(2022.5, 2024.5, alpha=0.07, color="grey", label="Forecast window")
+    ax.plot(
+        test_ts.index,
+        test_forecast.values,
+        marker="s",
+        linestyle="--",
+        label="ARIMA Backtest Forecast (2023-2024)",
+        color="#E06C75",
+    )
+    ax.plot(
+        future_years,
+        future_forecast.values,
+        marker="D",
+        linestyle="--",
+        linewidth=2,
+        label=f"ARIMA Future Forecast ({future_years[0]}-{future_years[-1]})",
+        color="#55A868",
+    )
+    ax.fill_between(
+        future_years,
+        future_lower.values,
+        future_upper.values,
+        color="#55A868",
+        alpha=0.15,
+        label="Future forecast interval",
+    )
+    ax.axvspan(2022.5, 2024.5, alpha=0.07, color="grey", label="Backtest window")
+    ax.axvspan(future_years[0] - 0.5, future_years[-1] + 0.5, alpha=0.07, color="#55A868", label="Future window")
     ax.set_title("ARIMA Forecast of UK Employment Rate (Annual)")
     ax.set_xlabel("Year")
     ax.set_ylabel("Employment Rate (%)")
-    ax.set_xticks(list(annual_emp.index))
+    ax.set_xticks(sorted(list(annual_emp.index) + list(future_years)))
     ax.legend()
     plt.tight_layout()
     save_fig(fig, "model1_arima_forecast.png")
